@@ -14,11 +14,9 @@ from telegram.ext import (
 BOT_TOKEN = "8644250144:AAFaWko2PTltYWKKDJ_G_P6TdrmyLg-Axkc"
 GROUP_ID = -1003934966038
 
-# --- ЛОГИРОВАНИЕ ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- БАЗА ДАННЫХ ---
 def init_db():
     conn = sqlite3.connect("users.db")
     c = conn.cursor()
@@ -48,10 +46,8 @@ def get_user(user_id):
     conn.close()
     return row
 
-# --- СОСТОЯНИЯ РЕГИСТРАЦИИ ---
 REG_NAME, REG_ROLE, REG_CONTACT = range(3)
 
-# --- СОСТОЯНИЯ СОЗДАНИЯ ПРОЕКТА ---
 (
     PROJ_NAME,
     PROJ_DESC,
@@ -60,15 +56,23 @@ REG_NAME, REG_ROLE, REG_CONTACT = range(3)
     PROJ_ROLE_NAME,
     PROJ_ROLE_SPEC,
     PROJ_ROLE_SKILLS,
-    PROJ_ROLE_LEVEL,
+    PROJ_ROLE_LOCATION,
     PROJ_ROLE_PAYMENT,
     PROJ_ROLE_MORE,
     PROJ_CONFIRM,
 ) = range(10, 21)
 
-# ========================
-# РЕГИСТРАЦИЯ
-# ========================
+def build_roles_text(roles):
+    text = ""
+    for i, role in enumerate(roles, 1):
+        text += (
+            f"\n👤 *Роль {i}: {role['name']}*\n"
+            f"   🎯 Специализация: {role['spec']}\n"
+            f"   🛠 Навыки: {role['skills']}\n"
+            f"   📍 Местоположение: {role['location']}\n"
+            f"   💵 Оплата: {role['payment']}\n"
+        )
+    return text
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -77,7 +81,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Ты уже зарегистрирован! ✅\n\nИспользуй /newproject чтобы создать пост о проекте."
         )
         return ConversationHandler.END
-
     await update.message.reply_text(
         "👋 Привет! Это бот для поиска команды.\n\nДавай зарегистрируемся. Как тебя зовут?"
     )
@@ -109,16 +112,11 @@ async def reg_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-# ========================
-# СОЗДАНИЕ ПРОЕКТА
-# ========================
-
 async def new_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not get_user(user_id):
         await update.message.reply_text("Сначала зарегистрируйся: /start")
         return ConversationHandler.END
-
     context.user_data["roles"] = []
     await update.message.reply_text("🚀 Создаём пост о проекте!\n\nКак называется твой проект?")
     return PROJ_NAME
@@ -126,16 +124,14 @@ async def new_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def proj_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["proj_name"] = update.message.text
     await update.message.reply_text(
-        "💡 Опиши идею проекта:\n"
-        "Что делаете, какую проблему решаете и для кого?"
+        "💡 Опиши идею проекта:\nЧто делаете, какую проблему решаете и для кого?"
     )
     return PROJ_DESC
 
 async def proj_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["proj_desc"] = update.message.text
     await update.message.reply_text(
-        "📍 На каком этапе находится проект?\n"
-        "(например: идея, есть MVP, работающий продукт с пользователями)"
+        "📍 На каком этапе находится проект?\n(например: идея, есть MVP, работающий продукт)"
     )
     return PROJ_STAGE
 
@@ -152,8 +148,7 @@ async def proj_format(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["proj_format"] = update.message.text
     await update.message.reply_text(
         "👥 Отлично! Теперь добавим роли в команду.\n\n"
-        "Как называется первая роль?\n"
-        "(например: Backend-разработчик, UI/UX дизайнер, Маркетолог)",
+        "Как называется первая роль?\n(например: Backend-разработчик, UI/UX дизайнер, Маркетолог)",
         reply_markup=ReplyKeyboardRemove()
     )
     return PROJ_ROLE_NAME
@@ -176,15 +171,13 @@ async def proj_role_spec(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def proj_role_skills(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["current_role"]["skills"] = update.message.text
-    levels = [["Junior", "Middle"], ["Senior", "Любой уровень"]]
     await update.message.reply_text(
-        "📊 Какой уровень опыта нужен?",
-        reply_markup=ReplyKeyboardMarkup(levels, one_time_keyboard=True, resize_keyboard=True)
+        "📍 Место проживания для этой роли?\n(напиши город, страну или просто «Любое»)"
     )
-    return PROJ_ROLE_LEVEL
+    return PROJ_ROLE_LOCATION
 
-async def proj_role_level(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["current_role"]["level"] = update.message.text
+async def proj_role_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["current_role"]["location"] = update.message.text
     payments = [["Доля в проекте", "Оплата"], ["Волонтёрство", "Обсуждаемо"]]
     await update.message.reply_text(
         "💵 Формат оплаты для этой роли?",
@@ -196,7 +189,6 @@ async def proj_role_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["current_role"]["payment"] = update.message.text
     context.user_data["roles"].append(context.user_data["current_role"])
     roles_count = len(context.user_data["roles"])
-
     more = [["➕ Добавить ещё роль", "✅ Перейти к публикации"]]
     await update.message.reply_text(
         f"✅ Роль #{roles_count} добавлена!\n\nДобавить ещё одну роль?",
@@ -207,26 +199,17 @@ async def proj_role_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def proj_role_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "➕ Добавить ещё роль":
         await update.message.reply_text(
-            "Как называется следующая роль?\n"
-            "(например: Frontend-разработчик, Копирайтер, Финансовый аналитик)",
+            "Как называется следующая роль?\n(например: Frontend-разработчик, Копирайтер)",
             reply_markup=ReplyKeyboardRemove()
         )
         return PROJ_ROLE_NAME
     else:
         user_id = update.effective_user.id
         user = get_user(user_id)
-        username = update.effective_user.username or user[3]
-
-        roles_text = ""
-        for i, role in enumerate(context.user_data["roles"], 1):
-            roles_text += (
-                f"\n👤 *Роль {i}: {role['name']}*\n"
-                f"   🎯 Специализация: {role['spec']}\n"
-                f"   🛠 Навыки: {role['skills']}\n"
-                f"   📊 Уровень: {role['level']}\n"
-                f"   💵 Оплата: {role['payment']}\n"
-            )
-
+        author_name = user[1]
+        author_role = user[2]
+        author_contact = user[3]
+        roles_text = build_roles_text(context.user_data["roles"])
         preview = (
             f"📋 *Превью поста:*\n\n"
             f"🚀 *{context.user_data['proj_name']}*\n\n"
@@ -237,9 +220,9 @@ async def proj_role_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔍 *Ищем в команду:*\n"
             f"{roles_text}"
             f"━━━━━━━━━━━━━━━\n\n"
-            f"👤 *Автор:* @{username}"
+            f"👤 *Автор:* {author_name} — {author_role}\n"
+            f"📩 *Написать:* {author_contact}"
         )
-
         confirm = [["✅ Опубликовать", "❌ Отменить"]]
         await update.message.reply_text(
             preview,
@@ -252,18 +235,10 @@ async def proj_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "✅ Опубликовать":
         user_id = update.effective_user.id
         user = get_user(user_id)
-        username = update.effective_user.username or user[3]
-
-        roles_text = ""
-        for i, role in enumerate(context.user_data["roles"], 1):
-            roles_text += (
-                f"\n👤 *Роль {i}: {role['name']}*\n"
-                f"   🎯 Специализация: {role['spec']}\n"
-                f"   🛠 Навыки: {role['skills']}\n"
-                f"   📊 Уровень: {role['level']}\n"
-                f"   💵 Оплата: {role['payment']}\n"
-            )
-
+        author_name = user[1]
+        author_role = user[2]
+        author_contact = user[3]
+        roles_text = build_roles_text(context.user_data["roles"])
         post = (
             f"🚀 *{context.user_data['proj_name']}*\n\n"
             f"💡 *Описание:* {context.user_data['proj_desc']}\n\n"
@@ -273,43 +248,21 @@ async def proj_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔍 *Ищем в команду:*\n"
             f"{roles_text}"
             f"━━━━━━━━━━━━━━━\n\n"
-            f"👤 *Автор:* @{username}\n"
-            f"📩 *Написать:* @{username}"
+            f"👤 *Автор:* {author_name} — {author_role}\n"
+            f"📩 *Написать:* {author_contact}"
         )
-
-        await context.bot.send_message(
-            chat_id=GROUP_ID,
-            text=post,
-            parse_mode="Markdown"
-        )
-
-        await update.message.reply_text(
-            "✅ Пост опубликован в группу!",
-            reply_markup=ReplyKeyboardRemove()
-        )
+        await context.bot.send_message(chat_id=GROUP_ID, text=post, parse_mode="Markdown")
+        await update.message.reply_text("✅ Пост опубликован в группу!", reply_markup=ReplyKeyboardRemove())
     else:
-        await update.message.reply_text(
-            "❌ Публикация отменена.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-
+        await update.message.reply_text("❌ Публикация отменена.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
-
-# ========================
-# ОТМЕНА
-# ========================
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Отменено.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-# ========================
-# ЗАПУСК
-# ========================
-
 def main():
     init_db()
-
     app = Application.builder().token(BOT_TOKEN).build()
 
     reg_handler = ConversationHandler(
@@ -325,17 +278,17 @@ def main():
     proj_handler = ConversationHandler(
         entry_points=[CommandHandler("newproject", new_project)],
         states={
-            PROJ_NAME:         [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_name)],
-            PROJ_DESC:         [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_desc)],
-            PROJ_STAGE:        [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_stage)],
-            PROJ_FORMAT:       [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_format)],
-            PROJ_ROLE_NAME:    [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_name)],
-            PROJ_ROLE_SPEC:    [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_spec)],
-            PROJ_ROLE_SKILLS:  [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_skills)],
-            PROJ_ROLE_LEVEL:   [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_level)],
-            PROJ_ROLE_PAYMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_payment)],
-            PROJ_ROLE_MORE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_more)],
-            PROJ_CONFIRM:      [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_confirm)],
+            PROJ_NAME:          [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_name)],
+            PROJ_DESC:          [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_desc)],
+            PROJ_STAGE:         [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_stage)],
+            PROJ_FORMAT:        [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_format)],
+            PROJ_ROLE_NAME:     [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_name)],
+            PROJ_ROLE_SPEC:     [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_spec)],
+            PROJ_ROLE_SKILLS:   [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_skills)],
+            PROJ_ROLE_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_location)],
+            PROJ_ROLE_PAYMENT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_payment)],
+            PROJ_ROLE_MORE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_more)],
+            PROJ_CONFIRM:       [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_confirm)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
