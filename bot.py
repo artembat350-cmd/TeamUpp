@@ -9,7 +9,7 @@ from telegram.ext import (
 
 # ====== НАСТРОЙКИ ======
 BOT_TOKEN = "8644250144:AAFaWko2PTltYWKKDJ_G_P6TdrmyLg-Axkc"
-GROUP_ID = -5280148754
+GROUP_ID = -1003934966038
 # =======================
 
 logging.basicConfig(level=logging.INFO)
