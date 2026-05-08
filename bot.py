@@ -151,7 +151,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
     await update.message.reply_text(
-        "👋 Привет! Это бот для поиска команды.\n\nДавай зарегистрируемся. Как тебя зовут?"
+        "👋 Привет! Это бот для создания поста твоего проекта.\n\nДавай зарегистрируемся. Как тебя зовут?"
     )
     return REG_NAME
 
