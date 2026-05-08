@@ -1,5 +1,6 @@
 import logging
 import sqlite3
+from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application,
@@ -17,6 +18,19 @@ GROUP_ID = -1003934966038
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+RULES_TEXT = (
+    "📋 *Правила публикации проекта*\n\n"
+    "*Запрещено:*\n"
+    "• Дублировать один и тот же проект несколько раз\n"
+    "• Публиковать проекты с целью сбора личных данных\n"
+    "• Рекламировать сторонние сервисы, курсы, продукты\n"
+    "• Использовать бота для спама или массовой рассылки\n"
+    "• Публиковать проекты без реального намерения набирать команду\n"
+    "• Повторная публикация одного проекта — не чаще раза в день\n\n"
+    "Нарушение правил ведёт к удалению поста.\n\n"
+    "Принимаешь правила?"
+)
+
 # ========================
 # БАЗА ДАННЫХ
 # ========================
@@ -29,7 +43,8 @@ def init_db():
             user_id INTEGER PRIMARY KEY,
             name TEXT,
             role TEXT,
-            contact TEXT
+            contact TEXT,
+            rules_accepted INTEGER DEFAULT 0
         )
     """)
     c.execute("""
@@ -37,16 +52,40 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
             title TEXT,
-            message_id INTEGER
+            message_id INTEGER,
+            status TEXT DEFAULT 'active',
+            last_published TEXT
         )
     """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS project_data (
+            project_id INTEGER PRIMARY KEY,
+            data TEXT
+        )
+    """)
+    # Добавляем колонки если их нет (для существующих баз)
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN rules_accepted INTEGER DEFAULT 0")
+    except:
+        pass
+    try:
+        c.execute("ALTER TABLE projects ADD COLUMN status TEXT DEFAULT 'active'")
+    except:
+        pass
+    try:
+        c.execute("ALTER TABLE projects ADD COLUMN last_published TEXT")
+    except:
+        pass
     conn.commit()
     conn.close()
 
 def save_user(user_id, name, role, contact):
     conn = sqlite3.connect("users.db")
     c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO users VALUES (?, ?, ?, ?)", (user_id, name, role, contact))
+    c.execute(
+        "INSERT OR REPLACE INTO users (user_id, name, role, contact, rules_accepted) VALUES (?, ?, ?, ?, COALESCE((SELECT rules_accepted FROM users WHERE user_id=?), 0))",
+        (user_id, name, role, contact, user_id)
+    )
     conn.commit()
     conn.close()
 
@@ -58,27 +97,108 @@ def get_user(user_id):
     conn.close()
     return row
 
-def save_project(user_id, title, message_id):
+def set_rules_accepted(user_id):
     conn = sqlite3.connect("users.db")
     c = conn.cursor()
-    c.execute("INSERT INTO projects (user_id, title, message_id) VALUES (?, ?, ?)", (user_id, title, message_id))
+    c.execute("UPDATE users SET rules_accepted = 1 WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
 
-def get_user_projects(user_id):
+def has_accepted_rules(user_id):
+    user = get_user(user_id)
+    if not user:
+        return False
+    return len(user) > 4 and user[4] == 1
+
+def save_project(user_id, title, message_id, data_json):
     conn = sqlite3.connect("users.db")
     c = conn.cursor()
-    c.execute("SELECT title, message_id FROM projects WHERE user_id = ?", (user_id,))
+    now = datetime.now().isoformat()
+    c.execute(
+        "INSERT INTO projects (user_id, title, message_id, status, last_published) VALUES (?, ?, ?, 'active', ?)",
+        (user_id, title, message_id, now)
+    )
+    project_id = c.lastrowid
+    c.execute("INSERT INTO project_data (project_id, data) VALUES (?, ?)", (project_id, data_json))
+    conn.commit()
+    conn.close()
+    return project_id
+
+def get_user_projects(user_id, status='active'):
+    conn = sqlite3.connect("users.db")
+    c = conn.cursor()
+    c.execute(
+        "SELECT id, title, message_id, last_published FROM projects WHERE user_id = ? AND status = ?",
+        (user_id, status)
+    )
     rows = c.fetchall()
     conn.close()
     return rows
+
+def get_active_project_count(user_id):
+    conn = sqlite3.connect("users.db")
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM projects WHERE user_id = ? AND status = 'active'", (user_id,))
+    count = c.fetchone()[0]
+    conn.close()
+    return count
+
+def get_project_data(project_id):
+    conn = sqlite3.connect("users.db")
+    c = conn.cursor()
+    c.execute("SELECT data FROM project_data WHERE project_id = ?", (project_id,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def update_project_data(project_id, data_json):
+    conn = sqlite3.connect("users.db")
+    c = conn.cursor()
+    c.execute("UPDATE project_data SET data = ? WHERE project_id = ?", (data_json, project_id))
+    conn.commit()
+    conn.close()
+
+def update_project_title(project_id, title):
+    conn = sqlite3.connect("users.db")
+    c = conn.cursor()
+    c.execute("UPDATE projects SET title = ? WHERE id = ?", (title, project_id))
+    conn.commit()
+    conn.close()
+
+def close_project(project_id):
+    conn = sqlite3.connect("users.db")
+    c = conn.cursor()
+    c.execute("UPDATE projects SET status = 'closed' WHERE id = ?", (project_id,))
+    conn.commit()
+    conn.close()
+
+def update_project_published(project_id, message_id):
+    conn = sqlite3.connect("users.db")
+    c = conn.cursor()
+    now = datetime.now().isoformat()
+    c.execute(
+        "UPDATE projects SET last_published = ?, message_id = ? WHERE id = ?",
+        (now, message_id, project_id)
+    )
+    conn.commit()
+    conn.close()
+
+def can_republish(project_id):
+    conn = sqlite3.connect("users.db")
+    c = conn.cursor()
+    c.execute("SELECT last_published FROM projects WHERE id = ?", (project_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row or not row[0]:
+        return True
+    last = datetime.fromisoformat(row[0])
+    return datetime.now() - last >= timedelta(days=1)
 
 # ========================
 # СОСТОЯНИЯ
 # ========================
 
 REG_NAME, REG_ROLE, REG_CONTACT = range(3)
-
 EDIT_FIELD, EDIT_VALUE = range(20, 22)
 
 (
@@ -88,7 +208,7 @@ EDIT_FIELD, EDIT_VALUE = range(20, 22)
     PROJ_STAGE,
     PROJ_ROLE_NAME,
     PROJ_ROLE_SPEC,
-    PROJ_ROLE_SKILLS,
+    PROJ_ROLE_DESC,
     PROJ_ROLE_EXP,
     PROJ_ROLE_HOURS,
     PROJ_ROLE_LOCATION,
@@ -96,8 +216,18 @@ EDIT_FIELD, EDIT_VALUE = range(20, 22)
     PROJ_ROLE_MORE,
     PROJ_EXTRA_CONTACT,
     PROJ_EXTRA_CONTACT_VALUE,
+    PROJ_RULES,
     PROJ_CONFIRM,
-) = range(30, 45)
+) = range(30, 46)
+
+(
+    MY_ACTION,
+    MY_SELECT_PROJECT,
+    MY_PROJECT_ACTION,
+    MY_EDIT_FIELD,
+    MY_EDIT_VALUE,
+    MY_CONFIRM_DELETE,
+) = range(60, 66)
 
 # ========================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -109,7 +239,7 @@ def build_roles_text(roles):
         text += (
             f"\n👤 *Роль {i}: {role['name']}*\n"
             f"   🎯 Специализация: {role['spec']}\n"
-            f"   🛠 Навыки: {role['skills']}\n"
+            f"   📝 Описание роли: {role['desc']}\n"
             f"   📋 Опыт: {role['exp']}\n"
             f"   ⏰ Занятость: {role['hours']}\n"
             f"   📍 Местоположение: {role['location']}\n"
@@ -121,7 +251,6 @@ def build_post(data, author_name, author_role, author_contact):
     roles_text = build_roles_text(data["roles"])
     link_line = f"🌐 *Ссылка:* {data['proj_link']}\n" if data.get("proj_link") else ""
     contact_line = data.get("extra_contact") or author_contact
-
     return (
         f"🚀 *{data['proj_name']}*\n\n"
         f"💡 *Описание:* {data['proj_desc']}\n\n"
@@ -151,7 +280,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
     await update.message.reply_text(
-        "👋 Привет! Это бот для создания поста твоего проекта.\n\nДавай зарегистрируемся. Как тебя зовут?"
+        "👋 Привет! Это бот для поиска команды.\n\nДавай зарегистрируемся. Как тебя зовут?"
     )
     return REG_NAME
 
@@ -194,7 +323,6 @@ async def edit_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user:
         await update.message.reply_text("Сначала зарегистрируйся: /start")
         return ConversationHandler.END
-
     fields = [["Имя", "Роль"], ["Контакт"]]
     await update.message.reply_text(
         f"Текущий профиль:\n"
@@ -219,18 +347,13 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = get_user(user_id)
     field = context.user_data["edit_field"]
     new_value = update.message.text
-
-    name = user[1]
-    role = user[2]
-    contact = user[3]
-
+    name, role, contact = user[1], user[2], user[3]
     if field == "Имя":
         name = new_value
     elif field == "Роль":
         role = new_value
     elif field == "Контакт":
         contact = new_value
-
     save_user(user_id, name, role, contact)
     await update.message.reply_text(f"✅ «{field}» обновлено!")
     return ConversationHandler.END
@@ -243,21 +366,151 @@ async def my_projects(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not get_user(user_id):
         await update.message.reply_text("Сначала зарегистрируйся: /start")
-        return
+        return ConversationHandler.END
 
-    projects = get_user_projects(user_id)
+    projects = get_user_projects(user_id, 'active')
     if not projects:
-        await update.message.reply_text("У тебя пока нет опубликованных проектов.\n\nСоздай первый: /newproject")
-        return
+        await update.message.reply_text(
+            "У тебя пока нет активных проектов.\n\nСоздай первый: /newproject"
+        )
+        return ConversationHandler.END
 
-    text = "📋 *Твои проекты:*\n\n"
-    for i, (title, message_id) in enumerate(projects, 1):
-        if message_id:
-            text += f"{i}. [{title}](https://t.me/c/{str(GROUP_ID)[4:]}/{message_id})\n"
-        else:
-            text += f"{i}. {title}\n"
+    context.user_data["my_projects"] = projects
+    lines = []
+    for i, (pid, title, msg_id, _) in enumerate(projects, 1):
+        lines.append(f"{i}. {title}")
 
-    await update.message.reply_text(text, parse_mode="Markdown")
+    buttons = [[p[1]] for p in projects]
+    await update.message.reply_text(
+        "📋 *Твои активные проекты:*\n\n" + "\n".join(lines) + "\n\nВыбери проект:",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup(buttons, one_time_keyboard=True, resize_keyboard=True)
+    )
+    return MY_SELECT_PROJECT
+
+async def my_select_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    title = update.message.text
+    projects = context.user_data.get("my_projects", [])
+    selected = next((p for p in projects if p[1] == title), None)
+    if not selected:
+        await update.message.reply_text("Проект не найден.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+
+    context.user_data["selected_project"] = selected
+    actions = [["✏️ Редактировать", "🔄 Опубликовать снова"], ["🗑 Удалить из профиля"]]
+    await update.message.reply_text(
+        f"Проект: *{title}*\n\nЧто хочешь сделать?",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup(actions, one_time_keyboard=True, resize_keyboard=True)
+    )
+    return MY_PROJECT_ACTION
+
+async def my_project_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    action = update.message.text
+    project = context.user_data["selected_project"]
+    project_id = project[0]
+
+    if action == "🔄 Опубликовать снова":
+        if not can_republish(project_id):
+            await update.message.reply_text(
+                "⏳ Повторная публикация этого проекта возможна не чаще раза в день.\n"
+                "Попробуй завтра.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return ConversationHandler.END
+
+        import json
+        raw = get_project_data(project_id)
+        if not raw:
+            await update.message.reply_text("Данные проекта не найдены.", reply_markup=ReplyKeyboardRemove())
+            return ConversationHandler.END
+
+        data = json.loads(raw)
+        user_id = update.effective_user.id
+        user = get_user(user_id)
+        post_text = build_post(data, user[1], user[2], user[3])
+        sent = await context.bot.send_message(chat_id=GROUP_ID, text=post_text, parse_mode="Markdown")
+        update_project_published(project_id, sent.message_id)
+        await update.message.reply_text("✅ Проект опубликован снова!", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+
+    elif action == "🗑 Удалить из профиля":
+        confirm = [["✅ Да, удалить", "❌ Отмена"]]
+        await update.message.reply_text(
+            "Удалить проект из профиля?\n\n"
+            "Пост в группе останется, но проект исчезнет из твоего списка.",
+            reply_markup=ReplyKeyboardMarkup(confirm, one_time_keyboard=True, resize_keyboard=True)
+        )
+        return MY_CONFIRM_DELETE
+
+    elif action == "✏️ Редактировать":
+        fields = [
+            ["Название", "Описание проекта"],
+            ["Ссылка на проект", "Этап проекта"],
+            ["Контакт для связи"]
+        ]
+        await update.message.reply_text(
+            "Что хочешь изменить?",
+            reply_markup=ReplyKeyboardMarkup(fields, one_time_keyboard=True, resize_keyboard=True)
+        )
+        return MY_EDIT_FIELD
+
+    await update.message.reply_text("Неизвестное действие.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+async def my_confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == "✅ Да, удалить":
+        project = context.user_data["selected_project"]
+        close_project(project[0])
+        await update.message.reply_text(
+            "✅ Проект удалён из профиля.\nПост в группе остался.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    else:
+        await update.message.reply_text("Отменено.", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+async def my_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["edit_project_field"] = update.message.text
+    await update.message.reply_text(
+        f"Введи новое значение для «{update.message.text}»:",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return MY_EDIT_VALUE
+
+async def my_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    import json
+    project = context.user_data["selected_project"]
+    project_id = project[0]
+    field = context.user_data["edit_project_field"]
+    new_value = update.message.text
+
+    raw = get_project_data(project_id)
+    if not raw:
+        await update.message.reply_text("Данные не найдены.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+
+    data = json.loads(raw)
+
+    if field == "Название":
+        data["proj_name"] = new_value
+        update_project_title(project_id, new_value)
+    elif field == "Описание проекта":
+        data["proj_desc"] = new_value
+    elif field == "Ссылка на проект":
+        data["proj_link"] = None if new_value.lower() in ["нет", "no", "-"] else new_value
+    elif field == "Этап проекта":
+        data["proj_stage"] = new_value
+    elif field == "Контакт для связи":
+        data["extra_contact"] = new_value
+
+    update_project_data(project_id, json.dumps(data, ensure_ascii=False))
+    await update.message.reply_text(
+        f"✅ «{field}» обновлено!\n\n"
+        f"Используй «Опубликовать снова» в /myprojects чтобы выложить обновлённый пост.",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return ConversationHandler.END
 
 # ========================
 # СОЗДАНИЕ ПРОЕКТА
@@ -268,11 +521,43 @@ async def new_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not get_user(user_id):
         await update.message.reply_text("Сначала зарегистрируйся: /start")
         return ConversationHandler.END
+
+    active_count = get_active_project_count(user_id)
+    if active_count >= 3:
+        await update.message.reply_text(
+            "⚠️ У тебя уже 3 активных проекта — это максимум.\n\n"
+            "Удали один из проектов в /myprojects чтобы создать новый."
+        )
+        return ConversationHandler.END
+
     context.user_data["roles"] = []
     context.user_data["extra_contact"] = None
     context.user_data["proj_link"] = None
+
+    if not has_accepted_rules(user_id):
+        await update.message.reply_text(
+            RULES_TEXT,
+            parse_mode="Markdown",
+            reply_markup=ReplyKeyboardMarkup(
+                [["✅ Принимаю правила"]],
+                one_time_keyboard=True, resize_keyboard=True
+            )
+        )
+        return PROJ_RULES
+
     await update.message.reply_text("🚀 Создаём пост о проекте!\n\nКак называется твой проект?")
     return PROJ_NAME
+
+async def proj_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == "✅ Принимаю правила":
+        set_rules_accepted(update.effective_user.id)
+        await update.message.reply_text(
+            "✅ Отлично!\n\n🚀 Создаём пост о проекте!\n\nКак называется твой проект?",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return PROJ_NAME
+    await update.message.reply_text("Необходимо принять правила для публикации.")
+    return PROJ_RULES
 
 async def proj_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["proj_name"] = update.message.text
@@ -284,8 +569,7 @@ async def proj_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def proj_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["proj_desc"] = update.message.text
     await update.message.reply_text(
-        "🌐 Есть ли ссылка на проект, лендинг или прототип?\n"
-        "(вставь ссылку или напиши «Нет»)"
+        "🌐 Есть ли ссылка на проект, лендинг или прототип?\n(вставь ссылку или напиши «Нет»)"
     )
     return PROJ_LINK
 
@@ -300,7 +584,7 @@ async def proj_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def proj_stage(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["proj_stage"] = update.message.text
     await update.message.reply_text(
-        "👥 Отлично! Теперь добавим роли в команду.\n\n"
+        "👥 Теперь добавим роли в команду.\n\n"
         "Как называется первая роль?\n(например: Backend-разработчик, UI/UX дизайнер, Маркетолог)"
     )
     return PROJ_ROLE_NAME
@@ -316,16 +600,16 @@ async def proj_role_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def proj_role_spec(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["current_role"]["spec"] = update.message.text
     await update.message.reply_text(
-        "🛠 Ключевые навыки и технологии?\n"
-        "(например: Python, FastAPI, PostgreSQL / Figma, Adobe XD)"
+        "📝 Описание роли:\n"
+        "Чем будет заниматься человек, какие задачи решать, какие навыки нужны?"
     )
-    return PROJ_ROLE_SKILLS
+    return PROJ_ROLE_DESC
 
-async def proj_role_skills(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["current_role"]["skills"] = update.message.text
+async def proj_role_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["current_role"]["desc"] = update.message.text
     await update.message.reply_text(
-        "📋 Какой опыт работы требуется для этой роли?\n"
-        "(например: от 1 года в коммерческой разработке, опыт с React / или напиши «Не требуется»)"
+        "📋 Какой опыт работы требуется?\n"
+        "(например: от 1 года коммерческой разработки / или напиши «Не требуется»)"
     )
     return PROJ_ROLE_EXP
 
@@ -333,7 +617,7 @@ async def proj_role_exp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["current_role"]["exp"] = update.message.text
     hours = [["Полная занятость", "Частичная занятость"], ["Пару часов в неделю", "Обсуждаемо"]]
     await update.message.reply_text(
-        "⏰ Какая занятость нужна для этой роли?",
+        "⏰ Какая занятость нужна?",
         reply_markup=ReplyKeyboardMarkup(hours, one_time_keyboard=True, resize_keyboard=True)
     )
     return PROJ_ROLE_HOURS
@@ -369,7 +653,7 @@ async def proj_role_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def proj_role_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "➕ Добавить ещё роль":
         await update.message.reply_text(
-            "Как называется следующая роль?\n(например: Frontend-разработчик, Копирайтер)",
+            "Как называется следующая роль?",
             reply_markup=ReplyKeyboardRemove()
         )
         return PROJ_ROLE_NAME
@@ -384,7 +668,7 @@ async def proj_role_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def proj_extra_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "✅ Да, добавить другой контакт":
         await update.message.reply_text(
-            "Напиши контакт для связи по этому проекту:\n(например: @username, email или номер телефона)",
+            "Напиши контакт для связи по этому проекту:",
             reply_markup=ReplyKeyboardRemove()
         )
         return PROJ_EXTRA_CONTACT_VALUE
@@ -398,8 +682,7 @@ async def proj_extra_contact_value(update: Update, context: ContextTypes.DEFAULT
 async def show_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = get_user(user_id)
-    author_name, author_role, author_contact = user[1], user[2], user[3]
-    post_text = build_post(context.user_data, author_name, author_role, author_contact)
+    post_text = build_post(context.user_data, user[1], user[2], user[3])
     confirm = [["✅ Опубликовать", "❌ Отменить"]]
     await update.message.reply_text(
         f"📋 *Превью поста:*\n\n{post_text}",
@@ -410,14 +693,13 @@ async def show_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def proj_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "✅ Опубликовать":
+        import json
         user_id = update.effective_user.id
         user = get_user(user_id)
-        author_name, author_role, author_contact = user[1], user[2], user[3]
-        post_text = build_post(context.user_data, author_name, author_role, author_contact)
-
+        post_text = build_post(context.user_data, user[1], user[2], user[3])
         sent = await context.bot.send_message(chat_id=GROUP_ID, text=post_text, parse_mode="Markdown")
-        save_project(user_id, context.user_data["proj_name"], sent.message_id)
-
+        data_json = json.dumps(context.user_data, ensure_ascii=False)
+        save_project(user_id, context.user_data["proj_name"], sent.message_id, data_json)
         await update.message.reply_text("✅ Пост опубликован в группу!", reply_markup=ReplyKeyboardRemove())
     else:
         await update.message.reply_text("❌ Публикация отменена.", reply_markup=ReplyKeyboardRemove())
@@ -461,13 +743,14 @@ def main():
     proj_handler = ConversationHandler(
         entry_points=[CommandHandler("newproject", new_project)],
         states={
+            PROJ_RULES:              [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_rules)],
             PROJ_NAME:               [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_name)],
             PROJ_DESC:               [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_desc)],
             PROJ_LINK:               [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_link)],
             PROJ_STAGE:              [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_stage)],
             PROJ_ROLE_NAME:          [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_name)],
             PROJ_ROLE_SPEC:          [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_spec)],
-            PROJ_ROLE_SKILLS:        [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_skills)],
+            PROJ_ROLE_DESC:          [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_desc)],
             PROJ_ROLE_EXP:           [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_exp)],
             PROJ_ROLE_HOURS:         [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_hours)],
             PROJ_ROLE_LOCATION:      [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_location)],
@@ -480,10 +763,22 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
+    myprojects_handler = ConversationHandler(
+        entry_points=[CommandHandler("myprojects", my_projects)],
+        states={
+            MY_SELECT_PROJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, my_select_project)],
+            MY_PROJECT_ACTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, my_project_action)],
+            MY_EDIT_FIELD:     [MessageHandler(filters.TEXT & ~filters.COMMAND, my_edit_field)],
+            MY_EDIT_VALUE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, my_edit_value)],
+            MY_CONFIRM_DELETE: [MessageHandler(filters.TEXT & ~filters.COMMAND, my_confirm_delete)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
     app.add_handler(reg_handler)
     app.add_handler(edit_handler)
     app.add_handler(proj_handler)
-    app.add_handler(CommandHandler("myprojects", my_projects))
+    app.add_handler(myprojects_handler)
 
     logger.info("✅ Бот запущен!")
     app.run_polling()
