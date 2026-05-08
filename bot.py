@@ -86,10 +86,10 @@ EDIT_FIELD, EDIT_VALUE = range(20, 22)
     PROJ_DESC,
     PROJ_LINK,
     PROJ_STAGE,
-    PROJ_FORMAT,
     PROJ_ROLE_NAME,
     PROJ_ROLE_SPEC,
     PROJ_ROLE_SKILLS,
+    PROJ_ROLE_EXP,
     PROJ_ROLE_HOURS,
     PROJ_ROLE_LOCATION,
     PROJ_ROLE_PAYMENT,
@@ -110,6 +110,7 @@ def build_roles_text(roles):
             f"\n👤 *Роль {i}: {role['name']}*\n"
             f"   🎯 Специализация: {role['spec']}\n"
             f"   🛠 Навыки: {role['skills']}\n"
+            f"   📋 Опыт: {role['exp']}\n"
             f"   ⏰ Занятость: {role['hours']}\n"
             f"   📍 Местоположение: {role['location']}\n"
             f"   💵 Оплата: {role['payment']}\n"
@@ -156,15 +157,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def reg_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["name"] = update.message.text
+    roles = [["Руководитель проекта", "Участник проекта"]]
     await update.message.reply_text(
-        "Какая твоя роль в проекте?\n(например: Основатель, Разработчик, Продакт-менеджер)"
+        "Какая твоя роль?",
+        reply_markup=ReplyKeyboardMarkup(roles, one_time_keyboard=True, resize_keyboard=True)
     )
     return REG_ROLE
 
 async def reg_role(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["role"] = update.message.text
     await update.message.reply_text(
-        "Как с тобой связаться?\n(напиши свой Telegram username, например @username)"
+        "Как с тобой связаться?\n(напиши свой Telegram username, например @username)",
+        reply_markup=ReplyKeyboardRemove()
     )
     return REG_CONTACT
 
@@ -295,19 +299,9 @@ async def proj_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def proj_stage(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["proj_stage"] = update.message.text
-    formats = [["Доля в проекте", "Оплата"], ["Волонтёрство", "Обсуждаемо"]]
-    await update.message.reply_text(
-        "💰 Общий формат сотрудничества в проекте?",
-        reply_markup=ReplyKeyboardMarkup(formats, one_time_keyboard=True, resize_keyboard=True)
-    )
-    return PROJ_FORMAT
-
-async def proj_format(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["proj_format"] = update.message.text
     await update.message.reply_text(
         "👥 Отлично! Теперь добавим роли в команду.\n\n"
-        "Как называется первая роль?\n(например: Backend-разработчик, UI/UX дизайнер, Маркетолог)",
-        reply_markup=ReplyKeyboardRemove()
+        "Как называется первая роль?\n(например: Backend-разработчик, UI/UX дизайнер, Маркетолог)"
     )
     return PROJ_ROLE_NAME
 
@@ -329,6 +323,14 @@ async def proj_role_spec(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def proj_role_skills(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["current_role"]["skills"] = update.message.text
+    await update.message.reply_text(
+        "📋 Какой опыт работы требуется для этой роли?\n"
+        "(например: от 1 года в коммерческой разработке, опыт с React / или напиши «Не требуется»)"
+    )
+    return PROJ_ROLE_EXP
+
+async def proj_role_exp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["current_role"]["exp"] = update.message.text
     hours = [["Полная занятость", "Частичная занятость"], ["Пару часов в неделю", "Обсуждаемо"]]
     await update.message.reply_text(
         "⏰ Какая занятость нужна для этой роли?",
@@ -463,10 +465,10 @@ def main():
             PROJ_DESC:               [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_desc)],
             PROJ_LINK:               [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_link)],
             PROJ_STAGE:              [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_stage)],
-            PROJ_FORMAT:             [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_format)],
             PROJ_ROLE_NAME:          [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_name)],
             PROJ_ROLE_SPEC:          [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_spec)],
             PROJ_ROLE_SKILLS:        [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_skills)],
+            PROJ_ROLE_EXP:           [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_exp)],
             PROJ_ROLE_HOURS:         [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_hours)],
             PROJ_ROLE_LOCATION:      [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_location)],
             PROJ_ROLE_PAYMENT:       [MessageHandler(filters.TEXT & ~filters.COMMAND, proj_role_payment)],
