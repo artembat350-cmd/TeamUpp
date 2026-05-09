@@ -13,7 +13,7 @@ from telegram.ext import (
 
 # --- НАСТРОЙКИ ---
 BOT_TOKEN = "8644250144:AAFaWko2PTltYWKKDJ_G_P6TdrmyLg-Axkc"
-GROUP_ID = -1003934966038
+GROUP_ID = -1003665316471
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
