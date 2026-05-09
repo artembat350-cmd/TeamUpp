@@ -1,5 +1,6 @@
 import logging
 import sqlite3
+import json
 from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
@@ -11,9 +12,8 @@ from telegram.ext import (
     filters,
 )
 
-# --- НАСТРОЙКИ ---
 BOT_TOKEN = "8644250144:AAFaWko2PTltYWKKDJ_G_P6TdrmyLg-Axkc"
-GROUP_ID = -1003665316471
+GROUP_ID = -1003934966038
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -63,19 +63,16 @@ def init_db():
             data TEXT
         )
     """)
-    # Добавляем колонки если их нет (для существующих баз)
-    try:
-        c.execute("ALTER TABLE users ADD COLUMN rules_accepted INTEGER DEFAULT 0")
-    except:
-        pass
-    try:
-        c.execute("ALTER TABLE projects ADD COLUMN status TEXT DEFAULT 'active'")
-    except:
-        pass
-    try:
-        c.execute("ALTER TABLE projects ADD COLUMN last_published TEXT")
-    except:
-        pass
+    for col in ["rules_accepted INTEGER DEFAULT 0"]:
+        try:
+            c.execute(f"ALTER TABLE users ADD COLUMN {col}")
+        except:
+            pass
+    for col in ["status TEXT DEFAULT 'active'", "last_published TEXT"]:
+        try:
+            c.execute(f"ALTER TABLE projects ADD COLUMN {col}")
+        except:
+            pass
     conn.commit()
     conn.close()
 
@@ -106,9 +103,7 @@ def set_rules_accepted(user_id):
 
 def has_accepted_rules(user_id):
     user = get_user(user_id)
-    if not user:
-        return False
-    return len(user) > 4 and user[4] == 1
+    return bool(user and len(user) > 4 and user[4] == 1)
 
 def save_project(user_id, title, message_id, data_json):
     conn = sqlite3.connect("users.db")
@@ -127,10 +122,7 @@ def save_project(user_id, title, message_id, data_json):
 def get_user_projects(user_id, status='active'):
     conn = sqlite3.connect("users.db")
     c = conn.cursor()
-    c.execute(
-        "SELECT id, title, message_id, last_published FROM projects WHERE user_id = ? AND status = ?",
-        (user_id, status)
-    )
+    c.execute("SELECT id, title, message_id, last_published FROM projects WHERE user_id = ? AND status = ?", (user_id, status))
     rows = c.fetchall()
     conn.close()
     return rows
@@ -176,10 +168,7 @@ def update_project_published(project_id, message_id):
     conn = sqlite3.connect("users.db")
     c = conn.cursor()
     now = datetime.now().isoformat()
-    c.execute(
-        "UPDATE projects SET last_published = ?, message_id = ? WHERE id = ?",
-        (now, message_id, project_id)
-    )
+    c.execute("UPDATE projects SET last_published = ?, message_id = ? WHERE id = ?", (now, message_id, project_id))
     conn.commit()
     conn.close()
 
@@ -191,8 +180,7 @@ def can_republish(project_id):
     conn.close()
     if not row or not row[0]:
         return True
-    last = datetime.fromisoformat(row[0])
-    return datetime.now() - last >= timedelta(days=1)
+    return datetime.now() - datetime.fromisoformat(row[0]) >= timedelta(days=1)
 
 # ========================
 # СОСТОЯНИЯ
@@ -221,13 +209,15 @@ EDIT_FIELD, EDIT_VALUE = range(20, 22)
 ) = range(30, 46)
 
 (
-    MY_ACTION,
     MY_SELECT_PROJECT,
     MY_PROJECT_ACTION,
     MY_EDIT_FIELD,
     MY_EDIT_VALUE,
     MY_CONFIRM_DELETE,
-) = range(60, 66)
+    MY_SELECT_ROLE,
+    MY_EDIT_ROLE_FIELD,
+    MY_EDIT_ROLE_VALUE,
+) = range(60, 68)
 
 # ========================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -273,15 +263,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if get_user(user_id):
         await update.message.reply_text(
             "Ты уже зарегистрирован! ✅\n\n"
-            "Доступные команды:\n"
+            "📋 *Доступные команды:*\n\n"
             "/newproject — создать пост о проекте\n"
             "/myprojects — мои проекты\n"
-            "/editprofile — изменить профиль"
+            "/editprofile — изменить профиль\n"
+            "/cancel — отменить текущее действие",
+            parse_mode="Markdown"
         )
         return ConversationHandler.END
-    await update.message.reply_text(
-        "👋 Привет! Это бот для поиска команды.\n\nДавай зарегистрируемся. Как тебя зовут?"
-    )
+    await update.message.reply_text("👋 Привет! Это бот для поиска команды.\n\nДавай зарегистрируемся. Как тебя зовут?")
     return REG_NAME
 
 async def reg_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -309,7 +299,12 @@ async def reg_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user(user_id, name, role, contact)
     await update.message.reply_text(
         f"✅ Готово, {name}! Ты зарегистрирован.\n\n"
-        f"Используй /newproject чтобы создать пост о проекте."
+        f"📋 *Доступные команды:*\n\n"
+        f"/newproject — создать пост о проекте\n"
+        f"/myprojects — мои проекты\n"
+        f"/editprofile — изменить профиль\n"
+        f"/cancel — отменить текущее действие",
+        parse_mode="Markdown"
     )
     return ConversationHandler.END
 
@@ -367,19 +362,12 @@ async def my_projects(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not get_user(user_id):
         await update.message.reply_text("Сначала зарегистрируйся: /start")
         return ConversationHandler.END
-
     projects = get_user_projects(user_id, 'active')
     if not projects:
-        await update.message.reply_text(
-            "У тебя пока нет активных проектов.\n\nСоздай первый: /newproject"
-        )
+        await update.message.reply_text("У тебя пока нет активных проектов.\n\nСоздай первый: /newproject")
         return ConversationHandler.END
-
     context.user_data["my_projects"] = projects
-    lines = []
-    for i, (pid, title, msg_id, _) in enumerate(projects, 1):
-        lines.append(f"{i}. {title}")
-
+    lines = [f"{i}. {p[1]}" for i, p in enumerate(projects, 1)]
     buttons = [[p[1]] for p in projects]
     await update.message.reply_text(
         "📋 *Твои активные проекты:*\n\n" + "\n".join(lines) + "\n\nВыбери проект:",
@@ -395,9 +383,8 @@ async def my_select_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not selected:
         await update.message.reply_text("Проект не найден.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
-
     context.user_data["selected_project"] = selected
-    actions = [["✏️ Редактировать", "🔄 Опубликовать снова"], ["🗑 Удалить из профиля"]]
+    actions = [["✏️ Редактировать проект", "👥 Редактировать роли"], ["🔄 Опубликовать снова", "🗑 Удалить из профиля"]]
     await update.message.reply_text(
         f"Проект: *{title}*\n\nЧто хочешь сделать?",
         parse_mode="Markdown",
@@ -413,18 +400,14 @@ async def my_project_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "🔄 Опубликовать снова":
         if not can_republish(project_id):
             await update.message.reply_text(
-                "⏳ Повторная публикация этого проекта возможна не чаще раза в день.\n"
-                "Попробуй завтра.",
+                "⏳ Повторная публикация возможна не чаще раза в день.",
                 reply_markup=ReplyKeyboardRemove()
             )
             return ConversationHandler.END
-
-        import json
         raw = get_project_data(project_id)
         if not raw:
             await update.message.reply_text("Данные проекта не найдены.", reply_markup=ReplyKeyboardRemove())
             return ConversationHandler.END
-
         data = json.loads(raw)
         user_id = update.effective_user.id
         user = get_user(user_id)
@@ -437,35 +420,48 @@ async def my_project_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "🗑 Удалить из профиля":
         confirm = [["✅ Да, удалить", "❌ Отмена"]]
         await update.message.reply_text(
-            "Удалить проект из профиля?\n\n"
-            "Пост в группе останется, но проект исчезнет из твоего списка.",
+            "Удалить проект из профиля?\nПост в группе останется.",
             reply_markup=ReplyKeyboardMarkup(confirm, one_time_keyboard=True, resize_keyboard=True)
         )
         return MY_CONFIRM_DELETE
 
-    elif action == "✏️ Редактировать":
+    elif action == "✏️ Редактировать проект":
         fields = [
             ["Название", "Описание проекта"],
             ["Ссылка на проект", "Этап проекта"],
             ["Контакт для связи"]
         ]
         await update.message.reply_text(
-            "Что хочешь изменить?",
+            "Что хочешь изменить в проекте?",
             reply_markup=ReplyKeyboardMarkup(fields, one_time_keyboard=True, resize_keyboard=True)
         )
         return MY_EDIT_FIELD
+
+    elif action == "👥 Редактировать роли":
+        raw = get_project_data(project_id)
+        if not raw:
+            await update.message.reply_text("Данные не найдены.", reply_markup=ReplyKeyboardRemove())
+            return ConversationHandler.END
+        data = json.loads(raw)
+        roles = data.get("roles", [])
+        if not roles:
+            await update.message.reply_text("В проекте нет ролей.", reply_markup=ReplyKeyboardRemove())
+            return ConversationHandler.END
+        context.user_data["project_data"] = data
+        buttons = [[f"Роль {i+1}: {r['name']}"] for i, r in enumerate(roles)]
+        await update.message.reply_text(
+            "Выбери роль для редактирования:",
+            reply_markup=ReplyKeyboardMarkup(buttons, one_time_keyboard=True, resize_keyboard=True)
+        )
+        return MY_SELECT_ROLE
 
     await update.message.reply_text("Неизвестное действие.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 async def my_confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "✅ Да, удалить":
-        project = context.user_data["selected_project"]
-        close_project(project[0])
-        await update.message.reply_text(
-            "✅ Проект удалён из профиля.\nПост в группе остался.",
-            reply_markup=ReplyKeyboardRemove()
-        )
+        close_project(context.user_data["selected_project"][0])
+        await update.message.reply_text("✅ Проект удалён из профиля.\nПост в группе остался.", reply_markup=ReplyKeyboardRemove())
     else:
         await update.message.reply_text("Отменено.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
@@ -479,19 +475,15 @@ async def my_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MY_EDIT_VALUE
 
 async def my_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    import json
     project = context.user_data["selected_project"]
     project_id = project[0]
     field = context.user_data["edit_project_field"]
     new_value = update.message.text
-
     raw = get_project_data(project_id)
     if not raw:
         await update.message.reply_text("Данные не найдены.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
-
     data = json.loads(raw)
-
     if field == "Название":
         data["proj_name"] = new_value
         update_project_title(project_id, new_value)
@@ -503,11 +495,115 @@ async def my_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["proj_stage"] = new_value
     elif field == "Контакт для связи":
         data["extra_contact"] = new_value
+    update_project_data(project_id, json.dumps(data, ensure_ascii=False))
+    await update.message.reply_text(
+        f"✅ «{field}» обновлено!\n\nИспользуй «Опубликовать снова» чтобы выложить обновлённый пост.",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return ConversationHandler.END
+
+# ========================
+# РЕДАКТИРОВАНИЕ РОЛЕЙ
+# ========================
+
+async def my_select_role(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    data = context.user_data.get("project_data", {})
+    roles = data.get("roles", [])
+
+    role_index = None
+    for i, r in enumerate(roles):
+        if f"Роль {i+1}: {r['name']}" == text:
+            role_index = i
+            break
+
+    if role_index is None:
+        await update.message.reply_text("Роль не найдена.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+
+    context.user_data["edit_role_index"] = role_index
+    role = roles[role_index]
+
+    fields = [
+        ["Название роли", "Специализация"],
+        ["Описание роли", "Опыт работы"],
+        ["Занятость", "Местоположение"],
+        ["Оплата"]
+    ]
+    await update.message.reply_text(
+        f"Редактируем: *{role['name']}*\n\nЧто хочешь изменить?",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup(fields, one_time_keyboard=True, resize_keyboard=True)
+    )
+    return MY_EDIT_ROLE_FIELD
+
+async def my_edit_role_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["edit_role_field"] = update.message.text
+
+    hints = {
+        "Название роли": "например: Backend-разработчик, Маркетолог",
+        "Специализация": "например: мобильная разработка iOS, веб-дизайн",
+        "Описание роли": "чем будет заниматься человек, какие задачи решать",
+        "Опыт работы": "например: от 1 года / или «Не требуется»",
+        "Занятость": "Полная занятость / Частичная занятость / Пару часов в неделю / Обсуждаемо",
+        "Местоположение": "город, страна или «Любое»",
+        "Оплата": "Доля в проекте / Оплата / Волонтёрство / Обсуждаемо",
+    }
+    hint = hints.get(update.message.text, "")
+
+    # Для занятости и оплаты показываем кнопки
+    if update.message.text == "Занятость":
+        buttons = [["Полная занятость", "Частичная занятость"], ["Пару часов в неделю", "Обсуждаемо"]]
+        await update.message.reply_text(
+            f"Выбери занятость:",
+            reply_markup=ReplyKeyboardMarkup(buttons, one_time_keyboard=True, resize_keyboard=True)
+        )
+    elif update.message.text == "Оплата":
+        buttons = [["Доля в проекте", "Оплата"], ["Волонтёрство", "Обсуждаемо"]]
+        await update.message.reply_text(
+            f"Выбери формат оплаты:",
+            reply_markup=ReplyKeyboardMarkup(buttons, one_time_keyboard=True, resize_keyboard=True)
+        )
+    else:
+        await update.message.reply_text(
+            f"Введи новое значение для «{update.message.text}»:\n_{hint}_",
+            parse_mode="Markdown",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    return MY_EDIT_ROLE_VALUE
+
+async def my_edit_role_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    project = context.user_data["selected_project"]
+    project_id = project[0]
+    field = context.user_data["edit_role_field"]
+    new_value = update.message.text
+    role_index = context.user_data["edit_role_index"]
+
+    raw = get_project_data(project_id)
+    if not raw:
+        await update.message.reply_text("Данные не найдены.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+
+    data = json.loads(raw)
+    role = data["roles"][role_index]
+
+    field_map = {
+        "Название роли": "name",
+        "Специализация": "spec",
+        "Описание роли": "desc",
+        "Опыт работы": "exp",
+        "Занятость": "hours",
+        "Местоположение": "location",
+        "Оплата": "payment",
+    }
+    key = field_map.get(field)
+    if key:
+        role[key] = new_value
+        data["roles"][role_index] = role
 
     update_project_data(project_id, json.dumps(data, ensure_ascii=False))
     await update.message.reply_text(
-        f"✅ «{field}» обновлено!\n\n"
-        f"Используй «Опубликовать снова» в /myprojects чтобы выложить обновлённый пост.",
+        f"✅ «{field}» для роли обновлено!\n\nИспользуй «Опубликовать снова» чтобы выложить обновлённый пост.",
         reply_markup=ReplyKeyboardRemove()
     )
     return ConversationHandler.END
@@ -521,96 +617,69 @@ async def new_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not get_user(user_id):
         await update.message.reply_text("Сначала зарегистрируйся: /start")
         return ConversationHandler.END
-
-    active_count = get_active_project_count(user_id)
-    if active_count >= 3:
+    if get_active_project_count(user_id) >= 3:
         await update.message.reply_text(
             "⚠️ У тебя уже 3 активных проекта — это максимум.\n\n"
-            "Удали один из проектов в /myprojects чтобы создать новый."
+            "Удали один в /myprojects чтобы создать новый."
         )
         return ConversationHandler.END
-
     context.user_data["roles"] = []
     context.user_data["extra_contact"] = None
     context.user_data["proj_link"] = None
-
     if not has_accepted_rules(user_id):
         await update.message.reply_text(
             RULES_TEXT,
             parse_mode="Markdown",
-            reply_markup=ReplyKeyboardMarkup(
-                [["✅ Принимаю правила"]],
-                one_time_keyboard=True, resize_keyboard=True
-            )
+            reply_markup=ReplyKeyboardMarkup([["✅ Принимаю правила"]], one_time_keyboard=True, resize_keyboard=True)
         )
         return PROJ_RULES
-
     await update.message.reply_text("🚀 Создаём пост о проекте!\n\nКак называется твой проект?")
     return PROJ_NAME
 
 async def proj_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "✅ Принимаю правила":
         set_rules_accepted(update.effective_user.id)
-        await update.message.reply_text(
-            "✅ Отлично!\n\n🚀 Создаём пост о проекте!\n\nКак называется твой проект?",
-            reply_markup=ReplyKeyboardRemove()
-        )
+        await update.message.reply_text("✅ Отлично!\n\n🚀 Создаём пост о проекте!\n\nКак называется твой проект?", reply_markup=ReplyKeyboardRemove())
         return PROJ_NAME
     await update.message.reply_text("Необходимо принять правила для публикации.")
     return PROJ_RULES
 
 async def proj_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["proj_name"] = update.message.text
-    await update.message.reply_text(
-        "💡 Опиши идею проекта:\nЧто делаете, какую проблему решаете и для кого?"
-    )
+    await update.message.reply_text("💡 Опиши идею проекта:\nЧто делаете, какую проблему решаете и для кого?")
     return PROJ_DESC
 
 async def proj_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["proj_desc"] = update.message.text
-    await update.message.reply_text(
-        "🌐 Есть ли ссылка на проект, лендинг или прототип?\n(вставь ссылку или напиши «Нет»)"
-    )
+    await update.message.reply_text("🌐 Есть ли ссылка на проект, лендинг или прототип?\n(вставь ссылку или напиши «Нет»)")
     return PROJ_LINK
 
 async def proj_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     context.user_data["proj_link"] = None if text.lower() in ["нет", "no", "-"] else text
-    await update.message.reply_text(
-        "📍 На каком этапе находится проект?\n(например: идея, есть MVP, работающий продукт)"
-    )
+    await update.message.reply_text("📍 На каком этапе находится проект?\n(например: идея, есть MVP, работающий продукт)")
     return PROJ_STAGE
 
 async def proj_stage(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["proj_stage"] = update.message.text
     await update.message.reply_text(
-        "👥 Теперь добавим роли в команду.\n\n"
-        "Как называется первая роль?\n(например: Backend-разработчик, UI/UX дизайнер, Маркетолог)"
+        "👥 Теперь добавим роли в команду.\n\nКак называется первая роль?\n(например: Backend-разработчик, UI/UX дизайнер)"
     )
     return PROJ_ROLE_NAME
 
 async def proj_role_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["current_role"] = {"name": update.message.text}
-    await update.message.reply_text(
-        "🎯 Направление / специализация для этой роли?\n"
-        "(например: мобильная разработка iOS, веб-дизайн, SMM)"
-    )
+    await update.message.reply_text("🎯 Направление / специализация для этой роли?\n(например: мобильная разработка iOS, веб-дизайн)")
     return PROJ_ROLE_SPEC
 
 async def proj_role_spec(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["current_role"]["spec"] = update.message.text
-    await update.message.reply_text(
-        "📝 Описание роли:\n"
-        "Чем будет заниматься человек, какие задачи решать, какие навыки нужны?"
-    )
+    await update.message.reply_text("📝 Описание роли:\nЧем будет заниматься человек, какие задачи решать, какие навыки нужны?")
     return PROJ_ROLE_DESC
 
 async def proj_role_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["current_role"]["desc"] = update.message.text
-    await update.message.reply_text(
-        "📋 Какой опыт работы требуется?\n"
-        "(например: от 1 года коммерческой разработки / или напиши «Не требуется»)"
-    )
+    await update.message.reply_text("📋 Какой опыт работы требуется?\n(например: от 1 года коммерческой разработки / или «Не требуется»)")
     return PROJ_ROLE_EXP
 
 async def proj_role_exp(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -624,10 +693,7 @@ async def proj_role_exp(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def proj_role_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["current_role"]["hours"] = update.message.text
-    await update.message.reply_text(
-        "📍 Место проживания для этой роли?\n(напиши город, страну или «Любое»)",
-        reply_markup=ReplyKeyboardRemove()
-    )
+    await update.message.reply_text("📍 Место проживания для этой роли?\n(напиши город, страну или «Любое»)", reply_markup=ReplyKeyboardRemove())
     return PROJ_ROLE_LOCATION
 
 async def proj_role_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -652,28 +718,20 @@ async def proj_role_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def proj_role_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "➕ Добавить ещё роль":
-        await update.message.reply_text(
-            "Как называется следующая роль?",
-            reply_markup=ReplyKeyboardRemove()
-        )
+        await update.message.reply_text("Как называется следующая роль?", reply_markup=ReplyKeyboardRemove())
         return PROJ_ROLE_NAME
-    else:
-        yesno = [["✅ Да, добавить другой контакт", "➡️ Нет, использовать контакт из профиля"]]
-        await update.message.reply_text(
-            "📞 Хочешь указать отдельный контакт для связи по этому проекту?",
-            reply_markup=ReplyKeyboardMarkup(yesno, one_time_keyboard=True, resize_keyboard=True)
-        )
-        return PROJ_EXTRA_CONTACT
+    yesno = [["✅ Да, добавить другой контакт", "➡️ Нет, использовать контакт из профиля"]]
+    await update.message.reply_text(
+        "📞 Хочешь указать отдельный контакт для связи по этому проекту?",
+        reply_markup=ReplyKeyboardMarkup(yesno, one_time_keyboard=True, resize_keyboard=True)
+    )
+    return PROJ_EXTRA_CONTACT
 
 async def proj_extra_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "✅ Да, добавить другой контакт":
-        await update.message.reply_text(
-            "Напиши контакт для связи по этому проекту:",
-            reply_markup=ReplyKeyboardRemove()
-        )
+        await update.message.reply_text("Напиши контакт для связи по этому проекту:", reply_markup=ReplyKeyboardRemove())
         return PROJ_EXTRA_CONTACT_VALUE
-    else:
-        return await show_preview(update, context)
+    return await show_preview(update, context)
 
 async def proj_extra_contact_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["extra_contact"] = update.message.text
@@ -693,7 +751,6 @@ async def show_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def proj_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "✅ Опубликовать":
-        import json
         user_id = update.effective_user.id
         user = get_user(user_id)
         post_text = build_post(context.user_data, user[1], user[2], user[3])
@@ -771,6 +828,9 @@ def main():
             MY_EDIT_FIELD:     [MessageHandler(filters.TEXT & ~filters.COMMAND, my_edit_field)],
             MY_EDIT_VALUE:     [MessageHandler(filters.TEXT & ~filters.COMMAND, my_edit_value)],
             MY_CONFIRM_DELETE: [MessageHandler(filters.TEXT & ~filters.COMMAND, my_confirm_delete)],
+            MY_SELECT_ROLE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, my_select_role)],
+            MY_EDIT_ROLE_FIELD:[MessageHandler(filters.TEXT & ~filters.COMMAND, my_edit_role_field)],
+            MY_EDIT_ROLE_VALUE:[MessageHandler(filters.TEXT & ~filters.COMMAND, my_edit_role_value)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
